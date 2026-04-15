@@ -296,11 +296,24 @@ def infer(model, buf):
     probs = model.predict(preprocess_clip(clip), verbose=0)[0]
     idx   = int(np.argmax(probs))
     return idx, float(probs[1]), probs
+    
+from tensorflow.keras.layers import Layer
 
+
+class Attention(Layer):
+    def __init__(self, **kwargs):
+        super(Attention, self).__init__(**kwargs)
+
+    def call(self, inputs):
+        return inputs  # placeholder (just to load model)
 
 @st.cache_resource(show_spinner=False)
 def load_model(path):
-    return tf.keras.models.load_model(path, compile=False)
+    return tf.keras.models.load_model(
+        path,
+        compile=False,
+        custom_objects={"Attention": Attention}
+    )
 
 
 def send_email(cfg, prob, ts):
