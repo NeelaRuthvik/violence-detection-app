@@ -321,7 +321,7 @@ class FixedInputLayer(InputLayer):
         kwargs.pop("optional", None)
         super().__init__(*args, **kwargs)
 
-tf.keras.utils.get_custom_objects()["InputLayer"] = FixedInputLayer
+
 
 @st.cache_resource(show_spinner=False)
 def load_model(path):
@@ -484,16 +484,16 @@ st.markdown("""
 #  LOAD MODEL
 # ─────────────────────────────────────────────────────────────
 model_file = MODEL_PATH_MAP[model_choice]
+
 if not os.path.isfile(model_file):
-    st.error(
-        f"❌ Model file not found: `{model_file}`\n\n"
-        "Please place your `.h5` model file in the `models/` directory.",
-        icon="🛑"
-    )
+    st.error("Model not found")
     st.stop()
 
-with st.spinner("Loading model weights…"):
-    model = load_model(model_file)
+model = tf.keras.models.load_model(
+    model_file,
+    compile=False,
+    custom_objects={"Attention": Attention}
+)
 
 st.markdown(f"""
 <div role="status" style="
