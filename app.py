@@ -313,9 +313,15 @@ class Attention(tf.keras.layers.Layer):
     def from_config(cls, config):
         return cls(**config)
         
-
 from tensorflow.keras.layers import InputLayer
-tf.keras.utils.get_custom_objects()["InputLayer"] = InputLayer
+
+class FixedInputLayer(InputLayer):
+    def __init__(self, *args, **kwargs):
+        kwargs.pop("batch_shape", None)
+        kwargs.pop("optional", None)
+        super().__init__(*args, **kwargs)
+
+tf.keras.utils.get_custom_objects()["InputLayer"] = FixedInputLayer
 
 @st.cache_resource(show_spinner=False)
 def load_model(path):
@@ -705,7 +711,7 @@ with tab_live:
                         continue
 
                     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                    buf.append(cv2.resize(rgb, (224, 224)))
+                    buf.append(cv2.resize(rgb, (160, 160)))
                     fc += 1
 
                     if len(buf) == FRAMES and fc % infer_every == 0:
