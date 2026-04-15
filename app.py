@@ -491,7 +491,7 @@ if not os.path.isfile(model_file):
     st.error("Model not found")
     st.stop()
 
-model = keras.models.load_model(
+model = tf.keras.models.load_model(
     model_file,
     compile=False,
     custom_objects={"Attention": Attention}
