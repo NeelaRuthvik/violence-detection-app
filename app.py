@@ -320,7 +320,7 @@ class FixedInputLayer(InputLayer):
         kwargs.pop("batch_shape", None)
         kwargs.pop("optional", None)
         super().__init__(*args, **kwargs)
-
+tf.keras.utils.get_custom_objects()["InputLayer"] = FixedInputLayer
 
 
 @st.cache_resource(show_spinner=False)
