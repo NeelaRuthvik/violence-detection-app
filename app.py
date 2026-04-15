@@ -314,26 +314,26 @@ class Attention(tf.keras.layers.Layer):
         return cls(**config)
         
 from tensorflow.keras.layers import InputLayer
+from tensorflow.keras import mixed_precision
 
+# Fix InputLayer
 class FixedInputLayer(InputLayer):
     def __init__(self, *args, **kwargs):
         kwargs.pop("batch_shape", None)
         kwargs.pop("optional", None)
         super().__init__(*args, **kwargs)
 
-
 tf.keras.utils.get_custom_objects()["InputLayer"] = FixedInputLayer
 
-from tensorflow.keras import mixed_precision
+# Fix DTypePolicy
+def fixed_dtype_policy(config):
+    name = config.get("name", "float32")
+    return mixed_precision.Policy(name)
 
-class FixedDTypePolicy:
-    def __init__(self, name="float32"):
-        self.name = name
+tf.keras.utils.get_custom_objects()["DTypePolicy"] = fixed_dtype_policy
 
-    def __call__(self, *args, **kwargs):
-        return mixed_precision.Policy(self.name)
-
-tf.keras.utils.get_custom_objects()["DTypePolicy"] = FixedDTypePolicy
+# Force safe dtype
+mixed_precision.set_global_policy("float32")
 
 
 @st.cache_resource(show_spinner=False)
