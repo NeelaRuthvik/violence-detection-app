@@ -320,7 +320,20 @@ class FixedInputLayer(InputLayer):
         kwargs.pop("batch_shape", None)
         kwargs.pop("optional", None)
         super().__init__(*args, **kwargs)
+
+
 tf.keras.utils.get_custom_objects()["InputLayer"] = FixedInputLayer
+
+from tensorflow.keras import mixed_precision
+
+class FixedDTypePolicy:
+    def __init__(self, name="float32"):
+        self.name = name
+
+    def __call__(self, *args, **kwargs):
+        return mixed_precision.Policy(self.name)
+
+tf.keras.utils.get_custom_objects()["DTypePolicy"] = FixedDTypePolicy
 
 
 @st.cache_resource(show_spinner=False)
