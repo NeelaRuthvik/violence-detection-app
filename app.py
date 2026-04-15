@@ -29,8 +29,8 @@ GRAPH_HISTORY = 60
 CHUNK_FRAMES  = 300   # flush/GC every N frames (large-video stability)
 
 MODEL_PATH_MAP = {
-    "MobileNet_BiLSTM_Attention (95.5%)": "models/mobilenet_bilstm_attention.keras",
-    "CNN_LSTM_Attention (88%)":           "models/cnn_lstm_attention.keras",
+    "MobileNet_BiLSTM_Attention (95.5%)": "models/mobilenet_bilstm_attention.h5",
+    "CNN_LSTM_Attention (88%)":           "models/cnn_lstm_attention.h5",
 }
 
 # ─────────────────────────────────────────────────────────────
@@ -309,16 +309,15 @@ class Attention(Layer):
 
 @st.cache_resource(show_spinner=False)
 def load_model(path):
-    return tf.keras.models.load_model(
-        path,
-        compile=False,
-        custom_objects={
-            "Attention": Attention,
-            "Functional": tf.keras.Model,
-            "Sequential": tf.keras.Sequential,
-            "Model": tf.keras.Model
-        }
-    )
+    try:
+        return tf.keras.models.load_model(
+            path,
+            compile=False,
+            custom_objects={"Attention": Attention}
+        )
+    except Exception as e:
+        print("Error loading model:", e)
+        return tf.keras.models.load_model(path, compile=False)
 
 
 def send_email(cfg, prob, ts):
