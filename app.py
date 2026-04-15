@@ -480,9 +480,17 @@ st.markdown("""
 </header>
 """, unsafe_allow_html=True)
 
+
 # ─────────────────────────────────────────────────────────────
 #  LOAD MODEL
 # ─────────────────────────────────────────────────────────────
+
+model_file = MODEL_PATH_MAP[model_choice]
+
+if not os.path.isfile(model_file):
+    st.error(f"❌ Model not found: {model_file}")
+    st.stop()
+
 @st.cache_resource(show_spinner=False)
 def load_model_safe(path):
     try:
@@ -495,7 +503,6 @@ def load_model_safe(path):
     except Exception as e:
         st.error(f"❌ Model loading failed: {e}")
         st.stop()
-
 
 model = load_model_safe(model_file)
 
