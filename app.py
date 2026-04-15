@@ -27,8 +27,8 @@ CHUNK_FRAMES  = 300   # flush/GC every N frames (large-video stability)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 MODEL_PATH_MAP = {
-    "MobileNet_BiLSTM_Attention (95.5%)": os.path.join(BASE_DIR, "models/mobilenet_bilstm_attention.keras"),
-    "CNN_LSTM_Attention (88%)": os.path.join(BASE_DIR, "models/cnn_lstm_attention.keras"),
+    "MobileNet_BiLSTM_Attention (95.5%)": os.path.join(BASE_DIR, "models/mobilenet_bilstm_attention.h5"),
+    "CNN_LSTM_Attention (88%)": os.path.join(BASE_DIR, "models/cnn_lstm_attention.h5"),
 }
 
 # ─────────────────────────────────────────────────────────────
@@ -483,19 +483,21 @@ st.markdown("""
 # ─────────────────────────────────────────────────────────────
 #  LOAD MODEL
 # ─────────────────────────────────────────────────────────────
-import keras
+@st.cache_resource(show_spinner=False)
+def load_model_safe(path):
+    try:
+        model = tf.keras.models.load_model(
+            path,
+            compile=False,
+            custom_objects={"Attention": Attention}
+        )
+        return model
+    except Exception as e:
+        st.error(f"❌ Model loading failed: {e}")
+        st.stop()
 
-model_file = MODEL_PATH_MAP[model_choice]
 
-if not os.path.isfile(model_file):
-    st.error("Model not found")
-    st.stop()
-
-model = tf.keras.models.load_model(
-    model_file,
-    compile=False,
-    custom_objects={"Attention": Attention}
-)
+model = load_model_safe(model_file)
 
 st.markdown(f"""
 <div role="status" style="
@@ -823,7 +825,7 @@ with tab_demo:
                         break
 
                     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                    buf.append(cv2.resize(rgb, (224, 224)))
+                    buf.append(cv2.resize(rgb, (160,160)))
                     fc += 1
 
                     if len(buf) == FRAMES and fc % infer_every == 0:
