@@ -27,8 +27,8 @@ CHUNK_FRAMES  = 300   # flush/GC every N frames (large-video stability)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 MODEL_PATH_MAP = {
-    "MobileNet_BiLSTM_Attention (95.5%)": os.path.join(BASE_DIR, "models/mobilenet_bilstm_attention.h5"),
-    "CNN_LSTM_Attention (88%)": os.path.join(BASE_DIR, "models/cnn_lstm_attention.h5"),
+    "MobileNet_BiLSTM_Attention (95.5%)": os.path.join(BASE_DIR, "models/mobilenet_bilstm_attention.keras"),
+    "CNN_LSTM_Attention (88%)": os.path.join(BASE_DIR, "models/cnn_lstm_attention.keras"),
 }
 
 # ─────────────────────────────────────────────────────────────
