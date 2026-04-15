@@ -24,9 +24,11 @@ LABELS        = {0: "Non-Violent", 1: "Violent"}
 GRAPH_HISTORY = 60
 CHUNK_FRAMES  = 300   # flush/GC every N frames (large-video stability)
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 MODEL_PATH_MAP = {
-    "MobileNet_BiLSTM_Attention (95.5%)": "models/mobilenet_bilstm_attention.h5",
-    "CNN_LSTM_Attention (88%)":           "models/cnn_lstm_attention.h5",
+    "MobileNet_BiLSTM_Attention (95.5%)": os.path.join(BASE_DIR, "models/mobilenet_bilstm_attention.h5"),
+    "CNN_LSTM_Attention (88%)": os.path.join(BASE_DIR, "models/cnn_lstm_attention.h5"),
 }
 
 # ─────────────────────────────────────────────────────────────
@@ -310,6 +312,10 @@ class Attention(tf.keras.layers.Layer):
     @classmethod
     def from_config(cls, config):
         return cls(**config)
+        
+
+from tensorflow.keras.layers import InputLayer
+tf.keras.utils.get_custom_objects()["InputLayer"] = InputLayer
 
 @st.cache_resource(show_spinner=False)
 def load_model(path):
@@ -317,20 +323,15 @@ def load_model(path):
         model = tf.keras.models.load_model(
             path,
             compile=False,
-            safe_mode=False,
             custom_objects={
-                "Attention": Attention,
-                "Functional": tf.keras.Model,
-                "Sequential": tf.keras.Sequential,
-                "Model": tf.keras.Model
+                "Attention": Attention
             }
         )
-        print("✅ Model loaded successfully")
         return model
 
     except Exception as e:
-        print("❌ ERROR LOADING MODEL:", e)
-        raise e
+        st.error(f"❌ Model loading failed: {e}")
+        st.stop()
 
 
 def send_email(cfg, prob, ts):
@@ -477,7 +478,7 @@ st.markdown("""
 #  LOAD MODEL
 # ─────────────────────────────────────────────────────────────
 model_file = MODEL_PATH_MAP[model_choice]
-if not os.path.exists(model_file):
+if not os.path.isfile(model_file):
     st.error(
         f"❌ Model file not found: `{model_file}`\n\n"
         "Please place your `.h5` model file in the `models/` directory.",
@@ -599,7 +600,7 @@ with tab_live:
                     elif skip_frames:
                         prev_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-                    buf.append(cv2.resize(rgb, (224, 224)))
+                    buf.append(cv2.resize(rgb, (160, 160)))
 
                     if len(buf) == FRAMES and fc % infer_every == 0:
                         last_pred, last_prob, _ = infer(model, buf)
