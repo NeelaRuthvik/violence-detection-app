@@ -300,7 +300,7 @@ def infer(model, buf):
 
 @st.cache_resource(show_spinner=False)
 def load_model(path):
-    return tf.keras.models.load_model(path)
+    return tf.keras.models.load_model(path, compile=False)
 
 
 def send_email(cfg, prob, ts):
@@ -1007,15 +1007,5 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-import gdown
-import streamlit as st
-from tensorflow.keras.models import load_model
 
-@st.cache_resource
-def load_my_model():
-    url = "https://drive.google.com/uc?id=14dmKHUiC_bjbUa70H3UIHEuVKuurEc_S"
-    gdown.download(url, "model.h5", quiet=False, fuzzy=True)
-    return load_model("model.h5")
-
-model = load_my_model()
 
