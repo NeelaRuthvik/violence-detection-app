@@ -312,7 +312,12 @@ def load_model(path):
     return tf.keras.models.load_model(
         path,
         compile=False,
-        custom_objects={"Attention": Attention}
+        custom_objects={
+            "Attention": Attention,
+            "Functional": tf.keras.Model,
+            "Sequential": tf.keras.Sequential,
+            "Model": tf.keras.Model
+        }
     )
 
 
