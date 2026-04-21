@@ -1,5 +1,7 @@
-streamlit
-tensorflow==2.15.0
-opencv-python-headless
-numpy
-matplotlib
+streamlit>=1.35.0
+tensorflow>=2.15.0
+keras>=3.0.0
+opencv-python-headless>=4.8.0
+numpy>=1.24.0
+matplotlib>=3.7.0
+h5py>=3.9.0
