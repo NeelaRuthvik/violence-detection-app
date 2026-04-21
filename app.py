@@ -361,7 +361,10 @@ def load_model(path):
             safe_mode=False,
             custom_objects={
                 "Attention": Attention,
-                "DTypePolicy": fixed_dtype_policy
+                "DTypePolicy": fixed_dtype_policy,
+                "BatchNormalization": FixedBatchNormalization,
+                "Functional": tf.keras.Model,
+                "Sequential": tf.keras.Sequential
             }
         )
         return model
@@ -522,19 +525,9 @@ if not os.path.isfile(model_file):
     st.stop()
 
 @st.cache_resource(show_spinner=False)
-def load_model_safe(path):
-    try:
-        model = tf.keras.models.load_model(
-            path,
-            compile=False,
-            custom_objects={"Attention": Attention}
-        )
-        return model
-    except Exception as e:
-        st.error(f"❌ Model loading failed: {e}")
-        st.stop()
 
-model = load_model_safe(model_file)
+
+model = load_model(model_file)
 
 st.markdown(f"""
 <div role="status" style="
