@@ -342,12 +342,19 @@ from tensorflow.keras.layers import BatchNormalization
 
 class FixedBatchNormalization(BatchNormalization):
     def __init__(self, *args, **kwargs):
+        # Remove ALL problematic args
         kwargs.pop("use_scale", None)
+        kwargs.pop("scale", None)
         kwargs.pop("use_bias", None)
+        kwargs.pop("renorm", None)
+        kwargs.pop("fused", None)
+
         super().__init__(*args, **kwargs)
 
 # Register fix
 tf.keras.utils.get_custom_objects()["BatchNormalization"] = FixedBatchNormalization
+tf.keras.utils.get_custom_objects()["keras.layers.BatchNormalization"] = FixedBatchNormalization
+tf.keras.utils.get_custom_objects()["keras.src.layers.normalization.batch_normalization.BatchNormalization"] = FixedBatchNormalization
 # Force safe dtype
 mixed_precision.set_global_policy("float32")
 
@@ -363,6 +370,7 @@ def load_model(path):
                 "Attention": Attention,
                 "DTypePolicy": fixed_dtype_policy,
                 "BatchNormalization": FixedBatchNormalization,
+                "keras.layers.BatchNormalization": FixedBatchNormalization,
                 "Functional": tf.keras.Model,
                 "Sequential": tf.keras.Sequential
             }
