@@ -47,10 +47,10 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 MODEL_PATH_MAP = {
     "MobileNet_BiLSTM_Attention (95.5% acc)": os.path.join(
-        BASE_DIR, "models", "mobilenet_bilstm_attention__1_.h5"
+        BASE_DIR, "models", "mobilenet_bilstm_attention (1).h5"
     ),
     "CNN_LSTM_Attention (88% acc)": os.path.join(
-        BASE_DIR, "models", "cnn_lstm_attention__1_.h5"
+        BASE_DIR, "models", "cnn_lstm_attention (1).h5"
     ),
 }
 
