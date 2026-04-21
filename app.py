@@ -325,9 +325,15 @@ class FixedInputLayer(InputLayer):
 
 tf.keras.utils.get_custom_objects()["InputLayer"] = FixedInputLayer
 
-# Fix DTypePolicy
-def fixed_dtype_policy(config):
-    name = config.get("name", "float32")
+from tensorflow.keras import mixed_precision
+
+# ✅ FIX DTypePolicy (PLACE HERE)
+def fixed_dtype_policy(*args, **kwargs):
+    if len(args) > 0 and isinstance(args[0], dict):
+        name = args[0].get("name", "float32")
+    else:
+        name = kwargs.get("name", "float32")
+
     return mixed_precision.Policy(name)
 
 tf.keras.utils.get_custom_objects()["DTypePolicy"] = fixed_dtype_policy
@@ -342,8 +348,10 @@ def load_model(path):
         model = tf.keras.models.load_model(
             path,
             compile=False,
+            safe_mode=False,
             custom_objects={
-                "Attention": Attention
+                "Attention": Attention,
+                "DTypePolicy": fixed_dtype_policy
             }
         )
         return model
@@ -351,7 +359,6 @@ def load_model(path):
     except Exception as e:
         st.error(f"❌ Model loading failed: {e}")
         st.stop()
-
 
 def send_email(cfg, prob, ts):
     if not cfg.get("enabled") or not cfg.get("to"):
