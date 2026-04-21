@@ -337,7 +337,17 @@ def fixed_dtype_policy(*args, **kwargs):
     return mixed_precision.Policy(name)
 
 tf.keras.utils.get_custom_objects()["DTypePolicy"] = fixed_dtype_policy
+from tensorflow.keras.layers import BatchNormalization
 
+
+class FixedBatchNormalization(BatchNormalization):
+    def __init__(self, *args, **kwargs):
+        kwargs.pop("use_scale", None)
+        kwargs.pop("use_bias", None)
+        super().__init__(*args, **kwargs)
+
+# Register fix
+tf.keras.utils.get_custom_objects()["BatchNormalization"] = FixedBatchNormalization
 # Force safe dtype
 mixed_precision.set_global_policy("float32")
 
