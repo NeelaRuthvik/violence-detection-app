@@ -359,7 +359,7 @@ tf.keras.utils.get_custom_objects()["keras.src.layers.normalization.batch_normal
 mixed_precision.set_global_policy("float32")
 
 
-@st.cache_resource(show_spinner=False)
+
 def load_model(path):
     try:
         model = tf.keras.models.load_model(
