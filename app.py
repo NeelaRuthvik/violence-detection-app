@@ -2,6 +2,7 @@
 """
 VisionGuard — Real-Time AI Violence Detection System
 Streamlit deployment app compatible with Keras 3 / TF 2.x
+Gmail API email alerts (OAuth2 — works on Streamlit Cloud)
 """
 
 # ── stdlib ────────────────────────────────────────────────────────────────────
@@ -11,18 +12,20 @@ import gc
 import time
 import datetime
 import tempfile
-import smtplib
 import io
 import csv
+import json
+import base64
+import pickle
 
 # ── third-party ───────────────────────────────────────────────────────────────
 import numpy as np
 import streamlit as st
 
 # ── Keras / TF — must come before any keras import ───────────────────────────
-os.environ["KERAS_BACKEND"] = "tensorflow"          # force TF backend
-os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"            # silence TF C++ logs
-os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"           # silence oneDNN noise
+os.environ["KERAS_BACKEND"] = "tensorflow"
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
+os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
 
 import tensorflow as tf
 import keras
@@ -34,14 +37,22 @@ import matplotlib.pyplot as plt
 from email.mime.text import MIMEText
 from collections import deque
 
+# ── Gmail API ─────────────────────────────────────────────────────────────────
+from google.oauth2.credentials import Credentials
+from google.auth.transport.requests import Request
+from google_auth_oauthlib.flow import Flow
+from googleapiclient.discovery import build
+
 # ─────────────────────────────────────────────────────────────────────────────
 #  CONSTANTS
 # ─────────────────────────────────────────────────────────────────────────────
-IMG_SIZE      = 160          # spatial size fed to model
-FRAMES        = 20           # temporal window length
+IMG_SIZE      = 160
+FRAMES        = 20
 LABELS        = {0: "Non-Violent", 1: "Violent"}
-GRAPH_HISTORY = 60           # data-points kept in analytics graph
-CHUNK_FRAMES  = 300          # GC every N frames on large videos
+GRAPH_HISTORY = 60
+CHUNK_FRAMES  = 300
+
+GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.send"]
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -55,7 +66,7 @@ MODEL_PATH_MAP = {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  PAGE CONFIG  (must be first Streamlit call)
+#  PAGE CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="VisionGuard · Live",
@@ -195,66 +206,141 @@ def section_header(text, sub=""):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  CUSTOM ATTENTION LAYER (fixes Keras 3 score_mode deserialization bug)
+#  GMAIL OAUTH2 — CLOUD-COMPATIBLE
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _client_config():
+    """Build client_config dict from Streamlit secrets."""
+    return {
+        "web": {
+            "client_id":     st.secrets["gmail"]["client_id"],
+            "client_secret": st.secrets["gmail"]["client_secret"],
+            "auth_uri":      "https://accounts.google.com/o/oauth2/auth",
+            "token_uri":     "https://oauth2.googleapis.com/token",
+            "redirect_uris": [st.secrets.get("gmail", {}).get("redirect_uri", "urn:ietf:wg:oauth:2.0:oob")],
+        }
+    }
+
+
+def gmail_auth_url() -> str:
+    """Return the OAuth consent URL. Stores the flow in session_state."""
+    flow = Flow.from_client_config(
+        _client_config(),
+        scopes=GMAIL_SCOPES,
+        redirect_uri="urn:ietf:wg:oauth:2.0:oob",   # copy-paste flow — no server needed
+    )
+    auth_url, state = flow.authorization_url(
+        access_type="offline",
+        include_granted_scopes="true",
+        prompt="consent",
+    )
+    st.session_state["gmail_flow_state"] = state
+    # Pickle the flow so we can exchange the code later
+    st.session_state["gmail_flow_pickle"] = pickle.dumps(flow)
+    return auth_url
+
+
+def gmail_exchange_code(code: str) -> bool:
+    """Exchange the authorisation code for credentials. Returns True on success."""
+    try:
+        flow: Flow = pickle.loads(st.session_state["gmail_flow_pickle"])
+        flow.fetch_token(code=code.strip())
+        creds = flow.credentials
+        # Persist as JSON string in session
+        st.session_state["gmail_token_json"] = creds.to_json()
+        return True
+    except Exception as exc:
+        st.error(f"Token exchange failed: {exc}")
+        return False
+
+
+def get_gmail_service():
+    """Return an authorised Gmail service, or None if not authenticated."""
+    token_json = st.session_state.get("gmail_token_json")
+    if not token_json:
+        return None
+    try:
+        creds = Credentials.from_authorized_user_info(
+            json.loads(token_json), GMAIL_SCOPES
+        )
+        if creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+            st.session_state["gmail_token_json"] = creds.to_json()
+        return build("gmail", "v1", credentials=creds)
+    except Exception:
+        return None
+
+
+def send_email_gmail_api(to_email: str, prob: float, ts: str):
+    """Send alert via Gmail API. Silently skips if not authenticated or no recipient."""
+    if not st.session_state.get("gmail_alerts_enabled"):
+        return
+    if not to_email:
+        return
+    service = get_gmail_service()
+    if service is None:
+        st.toast("⚠️ Gmail not authorised — alert not sent.", icon="⚠️")
+        return
+    try:
+        body    = (
+            f"VisionGuard detected possible violence at {ts}.\n"
+            f"Confidence: {prob:.1%}\n\nThis is an automated alert."
+        )
+        msg             = MIMEText(body)
+        msg["to"]       = to_email
+        msg["subject"]  = f"🚨 VisionGuard Alert — {ts}"
+        raw             = base64.urlsafe_b64encode(msg.as_bytes()).decode()
+        service.users().messages().send(userId="me", body={"raw": raw}).execute()
+    except Exception as exc:
+        st.toast(f"Email error: {exc}", icon="⚠️")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  CUSTOM ATTENTION LAYER
 # ─────────────────────────────────────────────────────────────────────────────
 
 class VGAttention(keras.layers.Layer):
-    """
-    Drop-in replacement for keras.layers.Attention.
-    Handles the Keras 3 bug where score_mode is deserialized as a function
-    object instead of a string, causing model loading to crash.
-    """
     def __init__(self, use_scale=False, score_mode="dot", dropout=0.0, **kwargs):
-        # strip score_mode before passing to super — parent doesn't need it
         kwargs.pop("score_mode", None)
         super().__init__(**kwargs)
         self.use_scale    = use_scale
-        self._score_mode  = "dot"          # always dot for these models
+        self._score_mode  = "dot"
         self.dropout_rate = dropout
 
     def call(self, inputs, **kwargs):
-        # inputs = [query, value]  (both same tensor from LSTM return_sequences)
         if isinstance(inputs, (list, tuple)) and len(inputs) >= 2:
             query, value = inputs[0], inputs[1]
         else:
             query = value = inputs
-        # Preserve input dtype (model may use mixed_float16)
-        dtype = query.dtype
+        dtype   = query.dtype
         d_k     = tf.cast(tf.shape(query)[-1], dtype)
         scores  = tf.matmul(query, value, transpose_b=True) / tf.math.sqrt(d_k)
-        # Softmax in float32 for numerical stability, then cast back
         weights = tf.cast(tf.nn.softmax(tf.cast(scores, tf.float32), axis=-1), dtype)
         return tf.matmul(weights, value)
 
     def get_config(self):
         cfg = super().get_config()
-        cfg.update({
-            "use_scale":  self.use_scale,
-            "score_mode": self._score_mode,
-            "dropout":    self.dropout_rate,
-        })
+        cfg.update({"use_scale": self.use_scale, "score_mode": self._score_mode,
+                    "dropout": self.dropout_rate})
         return cfg
 
     @classmethod
     def from_config(cls, config):
-        # Defensive: remove score_mode so __init__ kwargs.pop handles it
         config.pop("score_mode", None)
         return cls(**config)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  MODEL LOADING  (cached — loaded once per session)
+#  MODEL LOADING
 # ─────────────────────────────────────────────────────────────────────────────
 
 @st.cache_resource(show_spinner=False)
 def load_model(path: str):
-    """Load an .h5 model saved with Keras 3, handling the Attention bug."""
     if not os.path.isfile(path):
         return None, f"File not found: {path}"
     try:
         model = keras.saving.load_model(
-            path,
-            compile=False,
+            path, compile=False,
             custom_objects={"Attention": VGAttention},
         )
         return model, None
@@ -267,21 +353,15 @@ def load_model(path: str):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def preprocess_clip(frames_array: np.ndarray) -> np.ndarray:
-    """
-    frames_array : (FRAMES, H, W, 3)  uint8 or float32 RGB
-    Returns      : (1, FRAMES, 160, 160, 3)  float32, MobileNetV2-scaled
-    """
     resized = np.stack([
         cv2.resize(f, (IMG_SIZE, IMG_SIZE), interpolation=cv2.INTER_AREA)
         for f in frames_array
     ], axis=0).astype("float32")
-    # MobileNetV2 preprocessing: scale to [-1, 1]
     resized = (resized / 127.5) - 1.0
     return np.expand_dims(resized, axis=0)
 
 
 def run_inference(model, frame_buf):
-    """Return (class_index, violence_prob, full_prob_array)."""
     clip  = np.array(list(frame_buf), dtype="float32")
     probs = model.predict(preprocess_clip(clip), verbose=0)[0]
     idx   = int(np.argmax(probs))
@@ -289,35 +369,17 @@ def run_inference(model, frame_buf):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  EMAIL
-# ─────────────────────────────────────────────────────────────────────────────
-
-def send_email(cfg: dict, prob: float, ts: str):
-    if not cfg.get("enabled") or not cfg.get("to"):
-        return
-    try:
-        msg            = MIMEText(
-            f"VisionGuard detected possible violence at {ts}.\n"
-            f"Confidence: {prob:.1%}\n\nThis is an automated alert."
-        )
-        msg["Subject"] = f"🚨 VisionGuard Alert — {ts}"
-        msg["From"]    = cfg["user"]
-        msg["To"]      = cfg["to"]
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as s:
-            s.login(cfg["user"], cfg["password"])
-            s.sendmail(cfg["user"], cfg["to"], msg.as_string())
-    except Exception as exc:
-        st.toast(f"Email error: {exc}", icon="⚠️")
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 #  SESSION STATE
 # ─────────────────────────────────────────────────────────────────────────────
 _defaults = {
-    "alerts":                [],
-    "prob_history":          [],
-    "total_frames_processed": 0,
-    "email_cfg":             {},
+    "alerts":                  [],
+    "prob_history":            [],
+    "total_frames_processed":  0,
+    "gmail_alerts_enabled":    False,
+    "gmail_token_json":        None,
+    "gmail_flow_pickle":       None,
+    "gmail_flow_state":        None,
+    "gmail_recipient":         "",
 }
 for _k, _v in _defaults.items():
     if _k not in st.session_state:
@@ -370,9 +432,9 @@ with st.sidebar:
         options=["360p", "480p", "720p", "1080p"],
         value="480p",
     )
-    res_map   = {"360p": 640, "480p": 854, "720p": 1280, "1080p": 1920}
-    max_width = res_map[max_dim]
-    skip_frames = st.checkbox("Smart frame skipping", value=True)
+    res_map      = {"360p": 640, "480p": 854, "720p": 1280, "1080p": 1920}
+    max_width    = res_map[max_dim]
+    skip_frames  = st.checkbox("Smart frame skipping", value=True)
 
     st.markdown("---")
     st.markdown("#### 📡 Video Source")
@@ -382,26 +444,66 @@ with st.sidebar:
         rtsp_url = st.text_input("RTSP URL", placeholder="rtsp://user:pass@ip:port/stream")
 
     st.markdown("---")
-    with st.expander("📧 Email Alerts", expanded=False):
+
+    # ── Gmail OAuth2 Panel ────────────────────────────────────────────────────
+    with st.expander("📧 Gmail Alerts (OAuth2)", expanded=False):
         st.markdown(
-            "<small style='color:var(--muted)'>Uses Gmail SMTP (SSL). "
-            "Requires an App Password.</small>",
+            "<small style='color:var(--muted)'>Uses Gmail API — no App Password needed.</small>",
             unsafe_allow_html=True,
         )
-        email_on  = st.checkbox("Enable email alerts", key="email_on")
-        email_to  = st.text_input("Recipient email", placeholder="recipient@example.com")
-        email_usr = st.text_input("Your Gmail address", placeholder="you@gmail.com")
-        email_pwd = st.text_input("Gmail App Password", type="password")
-        st.session_state.email_cfg = {
-            "enabled": email_on,
-            "to":      email_to,
-            "user":    email_usr,
-            "password": email_pwd,
-        }
+        email_alerts = st.checkbox("Enable Gmail alerts",
+                                   value=st.session_state.gmail_alerts_enabled,
+                                   key="email_alerts_toggle")
+        st.session_state.gmail_alerts_enabled = email_alerts
+
+        recipient = st.text_input(
+            "Recipient email",
+            value=st.session_state.gmail_recipient,
+            placeholder="recipient@example.com",
+            key="gmail_recipient_input",
+        )
+        st.session_state.gmail_recipient = recipient
+
+        is_authed = st.session_state.get("gmail_token_json") is not None
+
+        if is_authed:
+            st.markdown(
+                "<div style='color:#10b981;font-size:12px;font-family:monospace;'>✓ Gmail authorised</div>",
+                unsafe_allow_html=True,
+            )
+            if st.button("🔓 Revoke & Re-authorise", use_container_width=True):
+                st.session_state.gmail_token_json   = None
+                st.session_state.gmail_flow_pickle  = None
+                st.rerun()
+        else:
+            if st.button("🔑 Authorise Gmail", use_container_width=True):
+                auth_url = gmail_auth_url()
+                st.markdown(
+                    f"**Step 1:** [Click here to authorise Gmail]({auth_url})\n\n"
+                    "**Step 2:** Copy the code shown and paste below.",
+                    unsafe_allow_html=False,
+                )
+                st.session_state["show_code_input"] = True
+
+            if st.session_state.get("show_code_input"):
+                auth_code = st.text_input(
+                    "Paste authorisation code here",
+                    key="gmail_auth_code",
+                    placeholder="4/0AX4X...",
+                )
+                if st.button("✅ Submit Code", use_container_width=True):
+                    if auth_code:
+                        ok = gmail_exchange_code(auth_code)
+                        if ok:
+                            st.session_state["show_code_input"] = False
+                            st.success("Gmail authorised successfully!")
+                            st.rerun()
+                    else:
+                        st.warning("Paste the code first.")
 
     st.markdown("---")
     col_a, col_b = st.columns(2)
-    col_a.metric("Alerts Logged",   len(st.session_state.alerts))
+    col_a.metric("Alerts Logged",    len(st.session_state.alerts))
     col_b.metric("Total Inferences", len(st.session_state.prob_history))
 
     if st.button("🗑️  Clear Session Data", use_container_width=True):
@@ -471,7 +573,6 @@ tab_live, tab_demo, tab_alerts, tab_analytics = st.tabs([
 # ═════════════════════════════════════════════════════════════════════════════
 with tab_live:
 
-    # ── VIDEO FILE ────────────────────────────────────────────────────────────
     if "Video" in source_mode:
         section_header("Upload & Analyse Video", "Supports .mp4 · .avi · .mov")
 
@@ -494,7 +595,6 @@ with tab_live:
         stop_btn  = col2.button("⏹  Stop",           use_container_width=True, key="vid_stop")
 
         if uploaded and start_btn:
-            # Write upload to a temp file so OpenCV can open it
             with st.spinner("Buffering video file…"):
                 tfile = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
                 WRITE_CHUNK = 8 * 1024 * 1024
@@ -537,13 +637,11 @@ with tab_live:
                     fc += 1
                     st.session_state.total_frames_processed += 1
 
-                    # Downscale display frame
                     if scale < 1.0:
                         frame = cv2.resize(frame, (disp_w, disp_h), interpolation=cv2.INTER_AREA)
 
                     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-                    # Smart skip: drop near-duplicate frames
                     if skip_frames:
                         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
                         if prev_gray is not None:
@@ -555,7 +653,6 @@ with tab_live:
 
                     buf.append(cv2.resize(rgb, (IMG_SIZE, IMG_SIZE)))
 
-                    # Run inference
                     if len(buf) == FRAMES and fc % infer_every == 0:
                         last_pred, last_prob, _ = run_inference(model, buf)
                         infer_count += 1
@@ -567,10 +664,10 @@ with tab_live:
                                 last_alert = now
                                 st.session_state.alerts.append(
                                     {"ts": ts, "prob": last_prob, "source": "Video"})
-                                send_email(st.session_state.email_cfg, last_prob, ts)
+                                send_email_gmail_api(
+                                    st.session_state.gmail_recipient, last_prob, ts)
                                 st.toast(f"🚨 Violence detected — {last_prob:.1%}", icon="🚨")
 
-                    # Overlay on display frame
                     is_danger = last_pred == 1 and last_prob >= threshold
                     c_cv      = (244, 63, 94) if is_danger else (16, 185, 129)
                     h, w      = rgb.shape[:2]
@@ -585,7 +682,6 @@ with tab_live:
                     if is_danger:
                         cv2.rectangle(rgb, (0, 0), (w - 1, h - 1), (244, 63, 94), 3)
 
-                    # Refresh display every half-inference-interval
                     if fc % max(1, infer_every // 2) == 0:
                         frame_ph.image(rgb, channels="RGB", use_container_width=True)
                         with status_ph.container():
@@ -621,7 +717,6 @@ with tab_live:
                 f"**{len(st.session_state.alerts)}** alert(s) logged."
             )
 
-    # ── RTSP ──────────────────────────────────────────────────────────────────
     else:
         section_header("RTSP / IP Camera Stream", "Live camera feed analysis")
 
@@ -672,7 +767,8 @@ with tab_live:
                                 last_alert = now
                                 st.session_state.alerts.append(
                                     {"ts": ts, "prob": last_prob, "source": "RTSP"})
-                                send_email(st.session_state.email_cfg, last_prob, ts)
+                                send_email_gmail_api(
+                                    st.session_state.gmail_recipient, last_prob, ts)
                                 st.toast(f"🚨 {last_prob:.1%} confidence!", icon="🚨")
 
                     is_danger = last_pred == 1 and last_prob >= threshold
@@ -783,7 +879,8 @@ with tab_demo:
                                 alert = {"ts": ts, "prob": last_prob, "source": cam_name}
                                 session_alerts.append(alert)
                                 st.session_state.alerts.append(alert)
-                                send_email(st.session_state.email_cfg, last_prob, ts)
+                                send_email_gmail_api(
+                                    st.session_state.gmail_recipient, last_prob, ts)
                                 st.toast(f"🚨 {cam_name}: {last_prob:.1%}", icon="🚨")
 
                     disp      = rgb.copy()
@@ -819,7 +916,6 @@ with tab_demo:
                         r3.metric("Alerts", len(session_alerts))
                         r4.metric("Frame",  fc)
 
-                    # Mini risk graph
                     if len(prob_trace) >= 2:
                         fig_s, ax_s = plt.subplots(figsize=(3, 1.5), facecolor="#111827")
                         ax_s.set_facecolor("#111827")
@@ -933,7 +1029,6 @@ with tab_analytics:
             ax.yaxis.grid(True, color=GRID_CLR, linewidth=0.5, alpha=0.6)
             ax.set_axisbelow(True)
 
-        # Plot 1 — probability timeline
         ax = axes[0, 0]
         style_ax(ax, "Violence Probability Timeline")
         ax.plot(xs, probs, color=ACCENT, linewidth=1.6, zorder=3)
@@ -947,7 +1042,6 @@ with tab_analytics:
         ax.set_ylim(0, 1)
         ax.legend(fontsize=8, facecolor=PANEL_BG, edgecolor=GRID_CLR, labelcolor=TEXT_CLR)
 
-        # Plot 2 — distribution
         ax2 = axes[0, 1]
         style_ax(ax2, "Probability Distribution")
         n_bins = min(25, max(5, len(probs) // 4))
@@ -955,7 +1049,6 @@ with tab_analytics:
                  edgecolor=DARK_BG, linewidth=0.5)
         ax2.axvline(threshold, color=WARN, linestyle="--", linewidth=1.1)
 
-        # Plot 3 — rolling alert rate
         ax3 = axes[1, 0]
         style_ax(ax3, "Rolling Alert Rate (window=10)")
         w       = 10
@@ -964,7 +1057,6 @@ with tab_analytics:
         ax3.fill_between(xs, rolling, alpha=0.13, color=DANGER)
         ax3.set_ylim(0, 1)
 
-        # Plot 4 — pie breakdown
         ax4 = axes[1, 1]
         ax4.set_facecolor(PANEL_BG)
         ax4.set_title("Breakdown", color="#e2e8f0", fontsize=11, fontfamily="monospace", pad=10)
