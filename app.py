@@ -39,7 +39,6 @@ from collections import deque
 # ── Gmail API ─────────────────────────────────────────────────────────────────
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
-from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -205,112 +204,56 @@ def section_header(text, sub=""):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  GMAIL OAUTH2 — CLOUD-COMPATIBLE (redirect_uri = app URL)
+#  GMAIL — REFRESH TOKEN FROM SECRETS  (no OAuth flow inside the app)
+#  Run  get_token.py  once locally to obtain the refresh token,
+#  then paste it into Streamlit Secrets.  The app never does OAuth itself.
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _get_redirect_uri() -> str:
-    return st.secrets["gmail"]["redirect_uri"]
+GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.send"]
 
 
-def _client_config():
-    """Build client_config dict from Streamlit secrets."""
-    return {
-        "web": {
-            "client_id":     st.secrets["gmail"]["client_id"],
-            "client_secret": st.secrets["gmail"]["client_secret"],
-            "auth_uri":      "https://accounts.google.com/o/oauth2/auth",
-            "token_uri":     "https://oauth2.googleapis.com/token",
-            "redirect_uris": [_get_redirect_uri()],
-        }
-    }
-
-
-def gmail_auth_url() -> str:
-    """Return the Google OAuth consent-screen URL."""
-    
-    flow = Flow.from_client_config(
-        _client_config(),
-        scopes=GMAIL_SCOPES,
-        redirect_uri=_get_redirect_uri(),
-    )
-
-    auth_url, state = flow.authorization_url(
-        access_type="offline",
-        include_granted_scopes="true",
-        prompt="consent",
-    )
-
-    st.session_state["gmail_flow_state"] = state
-    st.session_state["gmail_client_cfg"] = json.dumps(_client_config())
-    return auth_url.replace("http://", "https://")
-
-
-def gmail_exchange_code(code: str) -> bool:
+@st.cache_resource(show_spinner=False)
+def _build_gmail_service():
+    """
+    Build a Gmail API service from the refresh token stored in Streamlit Secrets.
+    Returns (service, error_string).  Cached for the lifetime of the server process.
+    """
     try:
-        client_cfg = json.loads(st.session_state["gmail_client_cfg"])
-        redirect_uri = _get_redirect_uri()
-
-        flow = Flow.from_client_config(
-            client_cfg,
-            scopes=GMAIL_SCOPES,
-            redirect_uri=redirect_uri,
-            state=st.session_state.get("gmail_flow_state"),
+        g = st.secrets["gmail"]
+        creds = Credentials(
+            token         = None,          # will be fetched automatically
+            refresh_token = g["refresh_token"],
+            token_uri     = "https://oauth2.googleapis.com/token",
+            client_id     = g["client_id"],
+            client_secret = g["client_secret"],
+            scopes        = GMAIL_SCOPES,
         )
-
-        # ✅ IMPORTANT FIX: explicitly pass redirect_uri again
-        flow.fetch_token(
-            code=code.strip(),
-            redirect_uri=redirect_uri
-        )
-
-        st.session_state["gmail_token_json"] = flow.credentials.to_json()
-
-        # ✅ Clear query params safely
-        st.query_params.clear()
-
-        return True
-
+        # Force an immediate refresh so we fail fast on bad credentials
+        creds.refresh(Request())
+        return build("gmail", "v1", credentials=creds), None
     except Exception as exc:
-        st.error(f"Token exchange failed: {exc}")
-        return False
-
-
-def get_gmail_service():
-    """Return an authorised Gmail service, or None if not authenticated."""
-    token_json = st.session_state.get("gmail_token_json")
-    if not token_json:
-        return None
-    try:
-        creds = Credentials.from_authorized_user_info(
-            json.loads(token_json), GMAIL_SCOPES
-        )
-        if creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-            st.session_state["gmail_token_json"] = creds.to_json()
-        return build("gmail", "v1", credentials=creds)
-    except Exception:
-        return None
+        return None, str(exc)
 
 
 def send_email_gmail_api(to_email: str, prob: float, ts: str):
-    """Send alert via Gmail API. Silently skips if not authenticated or no recipient."""
+    """Send a violence-alert email.  Skips silently when alerts are disabled."""
     if not st.session_state.get("gmail_alerts_enabled"):
         return
     if not to_email:
         return
-    service = get_gmail_service()
+    service, err = _build_gmail_service()
     if service is None:
-        st.toast("⚠️ Gmail not authorised — alert not sent.", icon="⚠️")
+        st.toast(f"⚠️ Gmail not ready: {err}", icon="⚠️")
         return
     try:
-        body    = (
+        body = (
             f"VisionGuard detected possible violence at {ts}.\n"
             f"Confidence: {prob:.1%}\n\nThis is an automated alert."
         )
-        msg             = MIMEText(body)
-        msg["to"]       = to_email
-        msg["subject"]  = f"🚨 VisionGuard Alert — {ts}"
-        raw             = base64.urlsafe_b64encode(msg.as_bytes()).decode()
+        msg            = MIMEText(body)
+        msg["to"]      = to_email
+        msg["subject"] = f"🚨 VisionGuard Alert — {ts}"
+        raw            = base64.urlsafe_b64encode(msg.as_bytes()).decode()
         service.users().messages().send(userId="me", body={"raw": raw}).execute()
     except Exception as exc:
         st.toast(f"Email error: {exc}", icon="⚠️")
@@ -397,29 +340,11 @@ _defaults = {
     "prob_history":            [],
     "total_frames_processed":  0,
     "gmail_alerts_enabled":    False,
-    "gmail_token_json":        None,
-    "gmail_flow_state":        None,
-    "gmail_client_cfg":        None,
     "gmail_recipient":         "",
 }
 for _k, _v in _defaults.items():
     if _k not in st.session_state:
         st.session_state[_k] = _v
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  HANDLE OAUTH CALLBACK  (Google redirects back with ?code=... in the URL)
-# ─────────────────────────────────────────────────────────────────────────────
-_qp = st.query_params
-if "code" in _qp and st.session_state.get("gmail_client_cfg"):
-    with st.spinner("Completing Gmail authorisation…"):
-        _ok = gmail_exchange_code(_qp["code"])
-    if _ok:
-        st.session_state.gmail_alerts_enabled = True
-        st.success("✅ Gmail authorised! Alerts are now active.")
-        st.rerun()
-    else:
-        st.error("❌ Authorisation failed — please try again.")
-        st.query_params.clear()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -481,16 +406,34 @@ with st.sidebar:
 
     st.markdown("---")
 
-    # ── Gmail OAuth2 Panel ────────────────────────────────────────────────────
-    with st.expander("📧 Gmail Alerts (OAuth2)", expanded=False):
-        st.markdown(
-            "<small style='color:var(--muted)'>Uses Gmail API — no App Password needed.</small>",
-            unsafe_allow_html=True,
+    # ── Gmail Alerts Panel ───────────────────────────────────────────────────
+    with st.expander("📧 Gmail Alerts", expanded=False):
+        # Check if secrets are properly configured
+        _gmail_ready = (
+            "gmail" in st.secrets
+            and "refresh_token" in st.secrets.get("gmail", {})
+            and st.secrets["gmail"].get("refresh_token", "")
         )
-        email_alerts = st.checkbox("Enable Gmail alerts",
-                                   value=st.session_state.gmail_alerts_enabled,
-                                   key="email_alerts_toggle")
-        st.session_state.gmail_alerts_enabled = email_alerts
+        if not _gmail_ready:
+            st.markdown(
+                "<div style='color:#f59e0b;font-size:11px;font-family:monospace;'>"
+                "⚠ Add refresh_token to Streamlit Secrets.<br>"
+                "Run get_token.py locally first.</div>",
+                unsafe_allow_html=True,
+            )
+        else:
+            st.markdown(
+                "<div style='color:#10b981;font-size:11px;font-family:monospace;'>✓ Gmail configured</div>",
+                unsafe_allow_html=True,
+            )
+
+        email_alerts = st.checkbox(
+            "Enable email alerts",
+            value=st.session_state.gmail_alerts_enabled,
+            key="email_alerts_toggle",
+            disabled=not _gmail_ready,
+        )
+        st.session_state.gmail_alerts_enabled = email_alerts and _gmail_ready
 
         recipient = st.text_input(
             "Recipient email",
@@ -499,37 +442,6 @@ with st.sidebar:
             key="gmail_recipient_input",
         )
         st.session_state.gmail_recipient = recipient
-
-        is_authed = st.session_state.get("gmail_token_json") is not None
-
-        if is_authed:
-            st.markdown(
-                "<div style='color:#10b981;font-size:12px;font-family:monospace;'>✓ Gmail authorised</div>",
-                unsafe_allow_html=True,
-            )
-            if st.button("🔓 Revoke & Re-authorise", use_container_width=True):
-                st.session_state.gmail_token_json = None
-                st.session_state.gmail_client_cfg = None
-                st.rerun()
-        else:
-            # Generate auth URL and show as a clickable link button
-            auth_url = gmail_auth_url()
-            st.markdown(
-                f"""<a href="{auth_url}" target="_self"
-                    style="display:block;text-align:center;padding:10px;
-                           border:1px solid #06b6d4;border-radius:6px;
-                           color:#06b6d4;font-family:monospace;font-size:13px;
-                           font-weight:600;letter-spacing:1.5px;text-decoration:none;
-                           text-transform:uppercase;background:transparent;">
-                    🔑 Authorise Gmail
-                </a>""",
-                unsafe_allow_html=True,
-            )
-            st.markdown(
-                "<small style='color:var(--muted)'>Clicking opens Google sign-in. "
-                "You'll be redirected back automatically.</small>",
-                unsafe_allow_html=True,
-            )
 
     st.markdown("---")
     col_a, col_b = st.columns(2)
