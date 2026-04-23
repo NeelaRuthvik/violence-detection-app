@@ -16,7 +16,6 @@ import io
 import csv
 import json
 import base64
-import pickle
 
 # ── third-party ───────────────────────────────────────────────────────────────
 import numpy as np
@@ -223,31 +222,35 @@ def _client_config():
 
 
 def gmail_auth_url() -> str:
-    """Return the OAuth consent URL. Stores the flow in session_state."""
+    """Return the OAuth consent URL. Stores only JSON-serialisable data in session_state."""
     flow = Flow.from_client_config(
         _client_config(),
         scopes=GMAIL_SCOPES,
-        redirect_uri="urn:ietf:wg:oauth:2.0:oob",   # copy-paste flow — no server needed
+        redirect_uri="urn:ietf:wg:oauth:2.0:oob",
     )
     auth_url, state = flow.authorization_url(
         access_type="offline",
         include_granted_scopes="true",
         prompt="consent",
     )
-    st.session_state["gmail_flow_state"] = state
-    # Pickle the flow so we can exchange the code later
-    st.session_state["gmail_flow_pickle"] = pickle.dumps(flow)
+    # Store only plain strings — Flow is NOT picklable on Streamlit Cloud
+    st.session_state["gmail_flow_state"]  = state
+    st.session_state["gmail_client_cfg"]  = json.dumps(_client_config())
     return auth_url
 
 
 def gmail_exchange_code(code: str) -> bool:
-    """Exchange the authorisation code for credentials. Returns True on success."""
+    """Rebuild a fresh Flow from stored config and exchange the authorisation code."""
     try:
-        flow: Flow = pickle.loads(st.session_state["gmail_flow_pickle"])
+        client_cfg = json.loads(st.session_state["gmail_client_cfg"])
+        flow = Flow.from_client_config(
+            client_cfg,
+            scopes=GMAIL_SCOPES,
+            redirect_uri="urn:ietf:wg:oauth:2.0:oob",
+            state=st.session_state.get("gmail_flow_state"),
+        )
         flow.fetch_token(code=code.strip())
-        creds = flow.credentials
-        # Persist as JSON string in session
-        st.session_state["gmail_token_json"] = creds.to_json()
+        st.session_state["gmail_token_json"] = flow.credentials.to_json()
         return True
     except Exception as exc:
         st.error(f"Token exchange failed: {exc}")
@@ -377,8 +380,8 @@ _defaults = {
     "total_frames_processed":  0,
     "gmail_alerts_enabled":    False,
     "gmail_token_json":        None,
-    "gmail_flow_pickle":       None,
     "gmail_flow_state":        None,
+    "gmail_client_cfg":        None,
     "gmail_recipient":         "",
 }
 for _k, _v in _defaults.items():
