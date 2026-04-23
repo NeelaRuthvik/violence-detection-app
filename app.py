@@ -209,12 +209,6 @@ def section_header(text, sub=""):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _get_redirect_uri() -> str:
-    """
-    The redirect URI must exactly match what is registered in Google Cloud Console.
-    Set  gmail.redirect_uri  in Streamlit Secrets to your app's public URL,
-    e.g.  https://violence-detection-app-qmm7fv7teftsy2bmakgljx.streamlit.app
-    No trailing slash.
-    """
     return st.secrets["gmail"]["redirect_uri"]
 
 
@@ -233,41 +227,49 @@ def _client_config():
 
 def gmail_auth_url() -> str:
     """Return the Google OAuth consent-screen URL."""
+    
     flow = Flow.from_client_config(
         _client_config(),
         scopes=GMAIL_SCOPES,
         redirect_uri=_get_redirect_uri(),
     )
+
     auth_url, state = flow.authorization_url(
         access_type="offline",
         include_granted_scopes="true",
         prompt="consent",
     )
-    # Only store plain JSON-serialisable strings (Flow itself is not picklable)
+
     st.session_state["gmail_flow_state"] = state
     st.session_state["gmail_client_cfg"] = json.dumps(_client_config())
-    return auth_url
+    return auth_url.replace("http://", "https://")
 
 
 def gmail_exchange_code(code: str) -> bool:
-    """
-    Called automatically when Google redirects back with ?code=...
-    Rebuilds a Flow from stored config and fetches the token.
-    """
     try:
-        client_cfg   = json.loads(st.session_state["gmail_client_cfg"])
+        client_cfg = json.loads(st.session_state["gmail_client_cfg"])
         redirect_uri = _get_redirect_uri()
+
         flow = Flow.from_client_config(
             client_cfg,
             scopes=GMAIL_SCOPES,
             redirect_uri=redirect_uri,
             state=st.session_state.get("gmail_flow_state"),
         )
-        flow.fetch_token(code=code.strip())
+
+        # ✅ IMPORTANT FIX: explicitly pass redirect_uri again
+        flow.fetch_token(
+            code=code.strip(),
+            redirect_uri=redirect_uri
+        )
+
         st.session_state["gmail_token_json"] = flow.credentials.to_json()
-        # Clear the code from the URL so the page loads cleanly
+
+        # ✅ Clear query params safely
         st.query_params.clear()
+
         return True
+
     except Exception as exc:
         st.error(f"Token exchange failed: {exc}")
         return False
