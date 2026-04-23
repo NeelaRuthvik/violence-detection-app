@@ -205,8 +205,18 @@ def section_header(text, sub=""):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  GMAIL OAUTH2 — CLOUD-COMPATIBLE
+#  GMAIL OAUTH2 — CLOUD-COMPATIBLE (redirect_uri = app URL)
 # ─────────────────────────────────────────────────────────────────────────────
+
+def _get_redirect_uri() -> str:
+    """
+    The redirect URI must exactly match what is registered in Google Cloud Console.
+    Set  gmail.redirect_uri  in Streamlit Secrets to your app's public URL,
+    e.g.  https://violence-detection-app-qmm7fv7teftsy2bmakgljx.streamlit.app
+    No trailing slash.
+    """
+    return st.secrets["gmail"]["redirect_uri"]
+
 
 def _client_config():
     """Build client_config dict from Streamlit secrets."""
@@ -216,41 +226,47 @@ def _client_config():
             "client_secret": st.secrets["gmail"]["client_secret"],
             "auth_uri":      "https://accounts.google.com/o/oauth2/auth",
             "token_uri":     "https://oauth2.googleapis.com/token",
-            "redirect_uris": [st.secrets.get("gmail", {}).get("redirect_uri", "urn:ietf:wg:oauth:2.0:oob")],
+            "redirect_uris": [_get_redirect_uri()],
         }
     }
 
 
 def gmail_auth_url() -> str:
-    """Return the OAuth consent URL. Stores only JSON-serialisable data in session_state."""
+    """Return the Google OAuth consent-screen URL."""
     flow = Flow.from_client_config(
         _client_config(),
         scopes=GMAIL_SCOPES,
-        redirect_uri="urn:ietf:wg:oauth:2.0:oob",
+        redirect_uri=_get_redirect_uri(),
     )
     auth_url, state = flow.authorization_url(
         access_type="offline",
         include_granted_scopes="true",
         prompt="consent",
     )
-    # Store only plain strings — Flow is NOT picklable on Streamlit Cloud
-    st.session_state["gmail_flow_state"]  = state
-    st.session_state["gmail_client_cfg"]  = json.dumps(_client_config())
+    # Only store plain JSON-serialisable strings (Flow itself is not picklable)
+    st.session_state["gmail_flow_state"] = state
+    st.session_state["gmail_client_cfg"] = json.dumps(_client_config())
     return auth_url
 
 
 def gmail_exchange_code(code: str) -> bool:
-    """Rebuild a fresh Flow from stored config and exchange the authorisation code."""
+    """
+    Called automatically when Google redirects back with ?code=...
+    Rebuilds a Flow from stored config and fetches the token.
+    """
     try:
-        client_cfg = json.loads(st.session_state["gmail_client_cfg"])
+        client_cfg   = json.loads(st.session_state["gmail_client_cfg"])
+        redirect_uri = _get_redirect_uri()
         flow = Flow.from_client_config(
             client_cfg,
             scopes=GMAIL_SCOPES,
-            redirect_uri="urn:ietf:wg:oauth:2.0:oob",
+            redirect_uri=redirect_uri,
             state=st.session_state.get("gmail_flow_state"),
         )
         flow.fetch_token(code=code.strip())
         st.session_state["gmail_token_json"] = flow.credentials.to_json()
+        # Clear the code from the URL so the page loads cleanly
+        st.query_params.clear()
         return True
     except Exception as exc:
         st.error(f"Token exchange failed: {exc}")
@@ -388,6 +404,21 @@ for _k, _v in _defaults.items():
     if _k not in st.session_state:
         st.session_state[_k] = _v
 
+# ─────────────────────────────────────────────────────────────────────────────
+#  HANDLE OAUTH CALLBACK  (Google redirects back with ?code=... in the URL)
+# ─────────────────────────────────────────────────────────────────────────────
+_qp = st.query_params
+if "code" in _qp and st.session_state.get("gmail_client_cfg"):
+    with st.spinner("Completing Gmail authorisation…"):
+        _ok = gmail_exchange_code(_qp["code"])
+    if _ok:
+        st.session_state.gmail_alerts_enabled = True
+        st.success("✅ Gmail authorised! Alerts are now active.")
+        st.rerun()
+    else:
+        st.error("❌ Authorisation failed — please try again.")
+        st.query_params.clear()
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  SIDEBAR
@@ -475,34 +506,28 @@ with st.sidebar:
                 unsafe_allow_html=True,
             )
             if st.button("🔓 Revoke & Re-authorise", use_container_width=True):
-                st.session_state.gmail_token_json   = None
-                st.session_state.gmail_flow_pickle  = None
+                st.session_state.gmail_token_json = None
+                st.session_state.gmail_client_cfg = None
                 st.rerun()
         else:
-            if st.button("🔑 Authorise Gmail", use_container_width=True):
-                auth_url = gmail_auth_url()
-                st.markdown(
-                    f"**Step 1:** [Click here to authorise Gmail]({auth_url})\n\n"
-                    "**Step 2:** Copy the code shown and paste below.",
-                    unsafe_allow_html=False,
-                )
-                st.session_state["show_code_input"] = True
-
-            if st.session_state.get("show_code_input"):
-                auth_code = st.text_input(
-                    "Paste authorisation code here",
-                    key="gmail_auth_code",
-                    placeholder="4/0AX4X...",
-                )
-                if st.button("✅ Submit Code", use_container_width=True):
-                    if auth_code:
-                        ok = gmail_exchange_code(auth_code)
-                        if ok:
-                            st.session_state["show_code_input"] = False
-                            st.success("Gmail authorised successfully!")
-                            st.rerun()
-                    else:
-                        st.warning("Paste the code first.")
+            # Generate auth URL and show as a clickable link button
+            auth_url = gmail_auth_url()
+            st.markdown(
+                f"""<a href="{auth_url}" target="_self"
+                    style="display:block;text-align:center;padding:10px;
+                           border:1px solid #06b6d4;border-radius:6px;
+                           color:#06b6d4;font-family:monospace;font-size:13px;
+                           font-weight:600;letter-spacing:1.5px;text-decoration:none;
+                           text-transform:uppercase;background:transparent;">
+                    🔑 Authorise Gmail
+                </a>""",
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                "<small style='color:var(--muted)'>Clicking opens Google sign-in. "
+                "You'll be redirected back automatically.</small>",
+                unsafe_allow_html=True,
+            )
 
     st.markdown("---")
     col_a, col_b = st.columns(2)
